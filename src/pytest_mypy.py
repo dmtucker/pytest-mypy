@@ -1,6 +1,7 @@
 """Mypy static type checker plugin for Pytest"""
 
 import os
+import warnings
 
 import pytest
 import mypy.api
@@ -15,6 +16,10 @@ def pytest_addoption(parser):
     group.addoption(
         '--mypy', action='store_true',
         help='run mypy on .py files')
+    group.addoption(
+        '--mypy-files', action='store_true',
+        help='Do not invoke mypy on files collected by pytest.'
+             ' Use this to enable specifying files in mypy.ini.')
     group.addoption(
         '--mypy-ignore-missing-imports', action='store_true',
         help="suppresses error messages about imports that cannot be resolved")
@@ -40,6 +45,7 @@ def pytest_collect_file(path, parent):
     if path.ext == '.py' and any([
             parent.config.option.mypy,
             parent.config.option.mypy_ignore_missing_imports,
+            parent.config.option.mypy_files,
     ]):
         return MypyItem(path, parent)
     return None
@@ -55,15 +61,18 @@ def pytest_runtestloop(session):
     if mypy_items:
 
         terminal = session.config.pluginmanager.getplugin('terminalreporter')
+        files = [] if session.config.option.mypy_files else [
+            str(item.fspath) for item in mypy_items.values()
+        ]
         terminal.write(
-            '\nRunning {command} on {file_count} files... '.format(
+            '\nRunning {command}{on_files}... '.format(
                 command=' '.join(['mypy'] + mypy_argv),
-                file_count=len(mypy_items),
+                on_files='' if not files else ' on {file_count} files'.format(
+                    file_count=len(files),
+                ),
             ),
         )
-        stdout, stderr, status = mypy.api.run(
-            mypy_argv + [str(item.fspath) for item in mypy_items.values()],
-        )
+        stdout, stderr, status = mypy.api.run(mypy_argv + files)
         terminal.write('done with status {status}\n'.format(status=status))
 
         unmatched_lines = []
@@ -100,6 +109,16 @@ class MypyItem(pytest.Item, pytest.File):
         """Raise an exception if mypy found errors for this item."""
         if self.mypy_errors:
             raise MypyError('\n'.join(self.mypy_errors))
+        elif self.config.option.mypy_files:
+            warnings.warn(
+                MypyWarning(
+                    'No mypy errors were detected in this file,'
+                    ' but since --mypy-files does not require'
+                    ' mypy to check files collected by pytest,'
+                    ' pytest-mypy cannot be sure that it was'
+                    ' actually checked.',
+                ),
+            )
 
     def reportinfo(self):
         """Produce a heading for the test report."""
@@ -124,3 +143,7 @@ class MypyError(Exception):
     An error caught by mypy, e.g a type checker violation
     or a syntax error.
     """
+
+
+class MypyWarning(getattr(pytest, 'PytestWarning', UserWarning)):
+    """A warning regarding mypy."""

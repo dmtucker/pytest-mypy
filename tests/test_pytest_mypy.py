@@ -118,3 +118,22 @@ def test_api_mypy_argv(testdir):
     ''')
     result = testdir.runpytest_subprocess('--mypy')
     assert result.ret == 0
+
+
+def test_mypy_files(testdir):
+    """Ensure that --mypy-files does not run collected files."""
+    testdir.makepyfile('''
+        def myfunc(x: int) -> str:
+            return x * 2
+    ''')
+    testdir.makefile('.txt', myfunc='''
+        def myfunc(x: int) -> int:
+            return x * 2
+    ''')
+    testdir.makefile('.ini', mypy='''
+        [mypy]
+        files = myfunc.txt
+    ''')
+    result = testdir.runpytest_subprocess('--mypy-files')
+    result.assert_outcomes(passed=1)
+    assert result.ret == 0
