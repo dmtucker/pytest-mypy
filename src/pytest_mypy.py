@@ -41,28 +41,44 @@ def pytest_configure(config):
 
 
 def pytest_collect_file(path, parent):
-    """Create a MypyItem for every file mypy should run on."""
+    """Create a MypyFileItem for every file mypy should run on."""
     if path.ext == '.py' and any([
             parent.config.option.mypy,
             parent.config.option.mypy_ignore_missing_imports,
             parent.config.option.mypy_files,
     ]):
-        return MypyItem(path, parent)
+        return MypyFileItem(path, parent)
     return None
 
 
-def pytest_runtestloop(session):
-    """Run mypy on collected MypyItems, then sort the output."""
-    mypy_items = {
+def _mypy_file_items(items):
+    return {
         os.path.abspath(str(item.fspath)): item
-        for item in session.items
-        if isinstance(item, MypyItem)
+        for item in items
+        if isinstance(item, MypyFileItem)
     }
-    if mypy_items:
+
+
+def pytest_collection_modifyitems(session, config, items):
+    """
+    Add a MypyStatusItem if --mypy-files is used.
+
+    With --mypy-files, mypy might check files that were not collected.
+    In that case, pytest could pass even though mypy failed.
+    To prevent that, add an explicit check for the mypy exit status.
+    """
+    if config.option.mypy_files and _mypy_file_items(items):
+        items.append(MypyStatusItem('mypy', session, config, session))
+
+
+def pytest_runtestloop(session):
+    """Run mypy on collected MypyFileItems, then sort the output."""
+    mypy_file_items = _mypy_file_items(session.items)
+    if mypy_file_items:
 
         terminal = session.config.pluginmanager.getplugin('terminalreporter')
         files = [] if session.config.option.mypy_files else [
-            str(item.fspath) for item in mypy_items.values()
+            str(item.fspath) for item in mypy_file_items.values()
         ]
         terminal.write(
             '\nRunning {command}{on_files}... '.format(
@@ -75,13 +91,17 @@ def pytest_runtestloop(session):
         stdout, stderr, status = mypy.api.run(mypy_argv + files)
         terminal.write('done with status {status}\n'.format(status=status))
 
+        for item in session.items:
+            if isinstance(item, MypyStatusItem):
+                item.mypy_status = status
+
         unmatched_lines = []
         for line in stdout.split('\n'):
             if not line:
                 continue
             mypy_path, _, error = line.partition(':')
             try:
-                item = mypy_items[os.path.abspath(mypy_path)]
+                item = mypy_file_items[os.path.abspath(mypy_path)]
             except KeyError:
                 unmatched_lines.append(line)
             else:
@@ -94,16 +114,41 @@ def pytest_runtestloop(session):
             terminal.write_line(stderr, red=True)
 
 
-class MypyItem(pytest.Item, pytest.File):
+class MypyItem(pytest.Item):
 
-    """A File that Mypy Runs On."""
+    """A Mypy-related test Item."""
 
     MARKER = 'mypy'
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add_marker(self.MARKER)
+
+    def repr_failure(self, excinfo):
+        """
+        Unwrap mypy errors so we get a clean error message without the
+        full exception repr.
+        """
+        if excinfo.errisinstance(MypyError):
+            return excinfo.value.args[0]
+        return super().repr_failure(excinfo)
+
+
+class MypyFileItem(MypyItem, pytest.File):
+
+    """A File that Mypy Runs On."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.mypy_errors = []
+
+    def reportinfo(self):
+        """Produce a heading for the test report."""
+        return (
+            self.fspath,
+            None,
+            self.config.invocation_dir.bestrelpath(self.fspath),
+        )
 
     def runtest(self):
         """Raise an exception if mypy found errors for this item."""
@@ -120,22 +165,22 @@ class MypyItem(pytest.Item, pytest.File):
                 ),
             )
 
-    def reportinfo(self):
-        """Produce a heading for the test report."""
-        return (
-            self.fspath,
-            None,
-            self.config.invocation_dir.bestrelpath(self.fspath),
-        )
 
-    def repr_failure(self, excinfo):
-        """
-        Unwrap mypy errors so we get a clean error message without the
-        full exception repr.
-        """
-        if excinfo.errisinstance(MypyError):
-            return excinfo.value.args[0]
-        return super().repr_failure(excinfo)
+class MypyStatusItem(MypyItem):
+
+    """A check for a non-zero mypy exit status."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.mypy_status = None
+
+    def runtest(self):
+        """Raise a MypyError if mypy exited with a non-zero status."""
+        assert self.mypy_status is not None
+        if self.mypy_status:
+            raise MypyError(
+                'mypy exited with status {0}.'.format(self.mypy_status),
+            )
 
 
 class MypyError(Exception):

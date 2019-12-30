@@ -1,3 +1,8 @@
+from packaging import version
+from pkg_resources import get_distribution
+import pytest
+
+
 def test_mypy_success(testdir):
     """Verify that running on a module with no type errors passes."""
     testdir.makepyfile('''
@@ -69,7 +74,7 @@ def test_non_mypy_error(testdir):
         def _patched_runtest(*args, **kwargs):
             raise Exception('{message}')
 
-        pytest_mypy.MypyItem.runtest = _patched_runtest
+        pytest_mypy.MypyFileItem.runtest = _patched_runtest
     '''.format(message=message))
     result = testdir.runpytest_subprocess()
     result.assert_outcomes()
@@ -120,6 +125,12 @@ def test_api_mypy_argv(testdir):
     assert result.ret == 0
 
 
+@pytest.mark.xfail(
+    version.parse(get_distribution('mypy').version) < version.parse('0.710'),
+    reason='--mypy-files requires mypy>=0.710:'
+           ' https://github.com/python/mypy/pull/6707',
+    strict=True,
+)
 def test_mypy_files(testdir):
     """Ensure that --mypy-files does not run collected files."""
     testdir.makepyfile('''
@@ -135,5 +146,27 @@ def test_mypy_files(testdir):
         files = myfunc.txt
     ''')
     result = testdir.runpytest_subprocess('--mypy-files')
-    result.assert_outcomes(passed=1)
+    result.assert_outcomes(passed=2)
     assert result.ret == 0
+
+
+def test_mypy_files_fail(testdir):
+    """
+    Ensure that --mypy-files indicates failure when
+    files that were not collected have errors.
+    """
+    testdir.makepyfile('''
+        def myfunc(x: int) -> int:
+            return x * 2
+    ''')
+    testdir.makefile('.txt', myfunc='''
+        def myfunc(x: int) -> str:
+            return x * 2
+    ''')
+    testdir.makefile('.ini', mypy='''
+        [mypy]
+        files = myfunc.txt
+    ''')
+    result = testdir.runpytest_subprocess('--mypy-files')
+    result.assert_outcomes(passed=1, failed=1)
+    assert result.ret != 0
