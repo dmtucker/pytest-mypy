@@ -36,7 +36,7 @@ setup(
     ],
     install_requires=[
         'filelock>=3.0',
-        'pytest>=3.5',
+        'pytest>=4.6',
         'mypy>=0.500; python_version<"3.8"',
         'mypy>=0.700; python_version>="3.8"',
     ],

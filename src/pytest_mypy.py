@@ -67,10 +67,6 @@ def pytest_configure(config):
                         node.config._mypy_results_path
             config.pluginmanager.register(_MypyXdistPlugin())
 
-    # pytest_terminal_summary cannot accept config before pytest 4.2.
-    global _pytest_terminal_summary_config
-    _pytest_terminal_summary_config = config
-
     config.addinivalue_line(
         'markers',
         '{marker}: mark tests to be checked by mypy.'.format(
@@ -262,9 +258,8 @@ class MypyError(Exception):
     """
 
 
-def pytest_terminal_summary(terminalreporter):
+def pytest_terminal_summary(terminalreporter, config):
     """Report stderr and unrecognized lines from stdout."""
-    config = _pytest_terminal_summary_config
     try:
         results = _cached_json_results(config._mypy_results_path)
     except FileNotFoundError:
